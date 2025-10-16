@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Student Finance Tracker</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <script>
+    // Theme preload: set data-theme before paint to avoid flash
+    (function(){
+      try{
+        const key = 'app:theme';
+        const stored = localStorage.getItem(key);
+        if(stored === 'light' || stored === 'dark'){
+          document.documentElement.setAttribute('data-theme', stored);
+        } else if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches){
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      }catch(e){/* ignore */}
+    })();
+  </script>
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to content</a>
+<header role="banner">
+  
+  <div>
+    <h1>Student Finance Tracker</h1>
+    <p id="summary" class="visually-hidden">Track budgets and transactions with keyboard-friendly, accessible UI.</p>
+  </div>
+  <nav aria-label="Primary">
+    <a href="#about">About</a>
+    <a href="#dashboard">Dashboard</a>
+    <a href="#records">Records</a>
+    <a href="#add">Add</a>
+    <a href="#settings">Settings</a>
+  </nav>
+  <div style="margin-left:.5rem">
+    <button id="themeToggle" aria-pressed="false" title="Toggle light / dark" aria-label="Toggle theme"></button>
+  </div>
+</header>
+
+<main id="main">
+  <section id="about" class="card" aria-labelledby="about-h">
+    <h2 id="about-h">About</h2>
+    <p>Purpose: a clean, minimal tracker to manage student expenses. Built with semantic HTML, responsive CSS, and modular JS.</p>
+  </section>
+
+  <div class="grid">
+    <section id="records" class="card" aria-labelledby="records-h">
+      <h2 id="records-h">Records</h2>
+      <div class="controls" role="region" aria-label="Search & sort">
+        <input id="search" placeholder="Live regex search (description/category)"/>
+        <button id="toggleCase" class="ghost" aria-pressed="false">Case-insensitive</button>
+        <span class="status" role="status" aria-live="polite" id="searchStatus"></span>
+      </div>
+      <table aria-describedby="searchStatus">
+        <thead>
+          <tr>
+            <th><button data-sort="date">Date</button></th>
+            <th><button data-sort="description">Description</button></th>
+            <th><button data-sort="category">Category</button></th>
+            <th><button data-sort="amount">Amount</button></th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </section>
+
+    <aside class="card" aria-labelledby="dash-h" id="dashboard">
+      <h2 id="dash-h">Stats</h2>
+      <p>Total records: <strong id="stat-total">0</strong></p>
+      <p>Sum: <strong id="stat-sum">0.00</strong></p>
+      <p>Top category: <span class="badge" id="stat-top">–</span></p>
+      <p>Last 7 days: <strong id="stat-week">0.00</strong></p>
+      <canvas id="chart-bycat" style="width:100%; height:180px"></canvas>
+      <canvas id="chart-trend" style="width:100%; height:180px; margin-top:8px"></canvas>
+      <hr/>
+      <label for="cap">Monthly cap/target</label>
+      <input id="cap" type="number" step="0.01" inputmode="decimal"/>
+      <p class="status" id="capStatus" role="status" aria-live="assertive"></p>
+    </aside>
+  </div>
+
+  <section id="add" class="card" aria-labelledby="add-h">
+    <h2 id="add-h">Add / Edit Record</h2>
+    <form id="form" novalidate>
+      <div class="controls">
+        <label class="visually-hidden" for="desc">Description</label>
+        <input id="desc" required placeholder="Description e.g., Lunch at cafeteria"/>
+        <label class="visually-hidden" for="amt">Amount</label>
+        <input id="amt" required inputmode="decimal" placeholder="12.50"/>
+        <label class="visually-hidden" for="cat">Category</label>
+        <input id="cat" required placeholder="Food, Books, Transport, Fees, Entertainment"/>
+        <label class="visually-hidden" for="date">Date</label>
+        <input id="date" required placeholder="2025-09-29"/>
+        <button class="primary" id="saveBtn">Save</button>
+        <button type="reset" id="cancelBtn">Cancel</button>
+      </div>
+      <p id="formErrors" class="status" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section id="settings" class="card" aria-labelledby="settings-h">
+    <h2 id="settings-h">Settings</h2>
+    <div class="controls">
+      <button id="exportBtn">Export JSON</button>
+      <label>
+        <span class="visually-hidden">Import JSON</span>
+        <input id="importFile" type="file" accept="application/json"/>
+      </label>
+      <button id="clearBtn" class="ghost">Clear All</button>
+    </div>
+    <p class="status" id="persistStatus" role="status" aria-live="polite"></p>
+    <details>
+      <summary>Keyboard help</summary>
+      <p>Use <kbd>Tab</kbd>/<kbd>Shift+Tab</kbd> to navigate; <kbd>Enter</kbd> to sort columns; <kbd>/</kbd> to focus search.</p>
+    </details>
+  </section>
+</main>
+
+<footer role="contentinfo">
+  <small>© <span id="year"></span> Student Finance Tracker • minimal • vanilla HTML/CSS/JS ·
+  Contact: <a href="mailto:k.uwambaye@alustudent.com">k.uwambaye@alustudent.com</a> ·
+  GitHub: <a href="https://github.com/kamyuwambaye" rel="me">@kamyuwambaye</a></small>
+</footer>
+
+<script type="module">
+
+// storage
+const KEY = 'app:data';
+function load(){ try{ return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch(e){ console.warn('Bad JSON in storage', e); return []; } }
+function save(data){ localStorage.setItem(KEY, JSON.stringify(data)); }
+function nuid(){ return 'rec_' + Math.random().toString(36).slice(2,9); }
+
+// validators & helpers
+function compileRegex(input, flags='i'){ try { return input ? new RegExp(input, flags) : null; } catch { return null; } }
+function highlight(text, re){ if(!re) return text; return text.replace(re, m => `<mark>${m}</mark>`); }
+const patterns = {
+  noEdgeSpaces: /^(?!\s)(?:.*\S)?$/,
+  amount: /^(?:\d+|\d+\.\d{1,2})$/,
+  date: /^(?:20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/,
+  category: /^[A-Za-z]+(?:[ -][A-Za-z]+)*$/,
+  noDuplicateWord: /\b(\w+)\s+\1\b/i,
+  strongPassword: /^(?=.*[A-Z])(?=.*\d).{6,}$/
+};
+function validateRecord(rec){
+  const errs = [];
+  if(!patterns.noEdgeSpaces.test(rec.description)) errs.push('Description cannot start/end with space.');
+  if(patterns.noDuplicateWord.test(rec.description)) errs.push('Duplicate word detected in description.');
+  if(!patterns.amount.test(String(rec.amount))) errs.push('Amount must be number with up to 2 decimals.');
+  if(!patterns.category.test(rec.category)) errs.push('Category must be letters/spaces only.');
+  if(!patterns.date.test(rec.date)) errs.push('Date must be YYYY-MM-DD.');
+  return errs;
+}
+// search
+function makeFilter(input, caseInsensitive=true){
+  const flags = caseInsensitive ? 'i' : '';
+  const re = compileRegex(input, flags);
+  return (rec) => !re || re.test(rec.description) || re.test(rec.category);
+}
+
+// state
+let data = load();
+function add(rec){
+  const now = new Date().toISOString();
+  const full = { id: nuid(), ...rec, createdAt: now, updatedAt: now };
+  const errs = validateRecord(full);
+  if(errs.length) throw new Error(errs.join(' '));
+  data.push(full); save(data); return full;
+}
+function update(id, partial){
+  const idx = data.findIndex(r => r.id === id);
+  if(idx < 0) throw new Error('Not found');
+  const merged = { ...data[idx], ...partial, updatedAt: new Date().toISOString() };
+  const errs = validateRecord(merged);
+  if(errs.length) throw new Error(errs.join(' '));
+  data[idx] = merged; save(data); return merged;
+}
+function removeItem(id){ data = data.filter(r => r.id !== id); save(data); }
+function clearAll(){ data = []; save(data); }
+function importJSON(json){
+  const arr = JSON.parse(json);
+  if(!Array.isArray(arr)) throw new Error('Invalid JSON');
+  arr.forEach(r => {
+    if(!r.id) r.id = nuid();
+    r.createdAt ||= new Date().toISOString();
+    r.updatedAt ||= r.createdAt;
+    const errs = validateRecord(r);
+    if(errs.length) throw new Error('Invalid record: ' + errs.join(' '));
+  });
+  data = arr; save(data);
+}
+function exportJSON(){ return JSON.stringify(data, null, 2); }
+function stats(){
+  const total = data.length;
+  const sum = data.reduce((a,b)=>a + Number(b.amount), 0);
+  const byCat = data.reduce((m,r)=> (m[r.category]=(m[r.category]||0)+Number(r.amount), m), {});
+  const top = Object.entries(byCat).sort((a,b)=>b[1]-a[1])[0]?.[0] || '—';
+  const now = Date.now();
+  const last7 = data.filter(r => (now - new Date(r.date).getTime()) <= 7*864e5)
+                    .reduce((a,b)=>a + Number(b.amount), 0);
+  return { total, sum, top, last7 };
+}
+
+// charts
+function drawBarChart(canvas, dataPairs, title=''){
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = 180;
+  ctx.clearRect(0,0,W,H);
+  ctx.font = '12px system-ui';
+  const values = dataPairs.map(d=>d[1]);
+  const max = Math.max(1, ...values);
+  const pad = 24;
+  const bw = dataPairs.length ? (W - pad*2) / dataPairs.length * 0.7 : 0;
+  const gap = dataPairs.length ? (W - pad*2) / dataPairs.length * 0.3 : 0;
+  ctx.fillText(title, 8, 14);
+  dataPairs.forEach((d,i)=>{
+    const x = pad + i*(bw+gap);
+    const h = Math.round((d[1]/max) * (H - 50));
+    const y = H - 30 - h;
+    ctx.fillStyle = '#e3d4c6';
+    ctx.fillRect(x, y, bw, h);
+    ctx.fillStyle = '#3e3a37';
+    const label = String(d[0]).slice(0,8);
+    ctx.fillText(label, x, H-10);
+  });
+}
+function drawLineChart(canvas, points, title=''){
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width = canvas.clientWidth;
+  const H = canvas.height = 180;
+  ctx.clearRect(0,0,W,H);
+  ctx.font = '12px system-ui';
+  const vals = points.map(p=>p[1]);
+  const max = Math.max(1, ...vals);
+  const pad = 24;
+  ctx.fillText(title, 8, 14);
+  if(points.length){
+    ctx.beginPath();
+    points.forEach((p,i)=>{
+      const x = pad + i*( (W-2*pad) / Math.max(1, points.length-1) );
+      const y = H - 30 - (p[1]/max) * (H - 50);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    });
+    ctx.strokeStyle = '#c7ad9a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#c7ad9a';
+    points.forEach((p,i)=>{
+      const x = pad + i*( (W-2*pad) / Math.max(1, points.length-1) );
+      const y = H - 30 - (p[1]/max) * (H - 50);
+      ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+    });
+  }
+}
+function refreshCharts(){
+  const byCatCanvas = document.getElementById('chart-bycat');
+  const trendCanvas = document.getElementById('chart-trend');
+  const byCat = data.reduce((m,r)=> (m[r.category]=(m[r.category]||0)+Number(r.amount), m), {});
+  const catPairs = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  drawBarChart(byCatCanvas, catPairs, 'Spend by Category');
+  const now = new Date();
+  const days = [...Array(7)].map((_,i)=>{
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()-6+i);
+    const key = d.toISOString().slice(0,10);
+    const sum = data.filter(r=>r.date===key).reduce((a,b)=>a+Number(b.amount),0);
+    return [key.slice(5), sum];
+  });
+  drawLineChart(trendCanvas, days, 'Last 7 Days');
+}
+window.addEventListener('resize', refreshCharts);
+
+// ui
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+let sortBy = 'date';
+let sortDir = 'desc';
+let editId = null;
+let caseInsensitive = true;
+
+function format(n){ return Number(n).toFixed(2); }
+
+function render(){
+  const tbody = $('#tbody');
+  const search = $('#search');
+  const filter = makeFilter(search.value, caseInsensitive);
+  let out = data.filter(filter);
+  out.sort((a,b)=>{
+    const v1 = a[sortBy], v2 = b[sortBy];
+    if(sortBy==='amount') return (sortDir==='asc'?1:-1)*(Number(v1)-Number(v2));
+    return (sortDir==='asc'?1:-1)*String(v1).localeCompare(String(v2));
+  });
+  const activeRE = search.value ? new RegExp(search.value, caseInsensitive ? 'i' : '') : null;
+  tbody.innerHTML = out.map(row => `<tr>
+    <td>${row.date}</td>
+    <td>${highlight(row.description, activeRE)}</td>
+    <td>${row.category}</td>
+    <td>${format(row.amount)}</td>
+    <td>
+      <button data-act="edit" data-id="${row.id}">Edit</button>
+      <button data-act="del" data-id="${row.id}">Delete</button>
+    </td>
+  </tr>`).join('');
+
+  const st = stats();
+  $('#stat-total').textContent = st.total;
+  $('#stat-sum').textContent = format(st.sum);
+  $('#stat-top').textContent = st.top;
+  $('#stat-week').textContent = format(st.last7);
+  $('#year').textContent = new Date().getFullYear();
+  updateCapStatus();
+  refreshCharts();
+}
+
+function updateCapStatus(){
+  const cap = Number($('#cap').value || 0);
+  const sum = Number($('#stat-sum').textContent);
+  const el = $('#capStatus');
+  if(!cap){ el.textContent = ''; return; }
+  const remaining = (cap - sum).toFixed(2);
+  if(remaining >= 0){ el.textContent = `Remaining this month: ${remaining}`; el.style.color = 'inherit'; }
+  else { el.textContent = `You exceeded the cap by ${Math.abs(remaining).toFixed(2)}!`; el.style.color = 'var(--danger)'; }
+}
+
+function handleAction(e){
+  const btn = e.target.closest('button');
+  if(!btn) return;
+  const id = btn.dataset.id;
+  if(btn.dataset.act === 'del'){
+    if(confirm('Delete this record?')){ removeItem(id); render(); }
+  }
+  if(btn.dataset.act === 'edit'){
+    const rec = data.find(r => r.id === id); if(!rec) return;
+    editId = id;
+    $('#desc').value = rec.description;
+    $('#amt').value = rec.amount;
+    $('#cat').value = rec.category;
+    $('#date').value = rec.date;
+    $('#saveBtn').textContent = 'Update';
+    document.getElementById('add').scrollIntoView({behavior:'smooth'});
+  }
+}
+
+function parseForm(){
+  const rec = {
+    description: $('#desc').value.trim(),
+    amount: $('#amt').value.trim(),
+    category: $('#cat').value.trim(),
+    date: $('#date').value.trim()
+  };
+  const errs = [];
+  if(!patterns.noEdgeSpaces.test(rec.description)) errs.push('Description cannot start/end with space.');
+  if(patterns.noDuplicateWord.test(rec.description)) errs.push('Duplicate word in description.');
+  if(!patterns.amount.test(rec.amount)) errs.push('Amount invalid (use 12 or 12.50).');
+  if(!patterns.category.test(rec.category)) errs.push('Category letters/spaces only.');
+  if(!patterns.date.test(rec.date)) errs.push('Date must be YYYY-MM-DD.');
+  return { rec: { ...rec, amount: Number(rec.amount) }, errs };
+}
+
+function init(){
+  const tbody = document.getElementById('tbody');
+  const search = document.getElementById('search');
+  const toggleCase = document.getElementById('toggleCase');
+  const themeToggle = document.getElementById('themeToggle');
+
+  document.getElementById('form').addEventListener('submit', (e)=>{
+    e.preventDefault();
+    const { rec, errs } = parseForm();
+    const out = document.getElementById('formErrors');
+    if(errs.length){ out.textContent = errs.join(' '); return; }
+    out.textContent = '';
+    try{
+      if(editId){ update(editId, rec); editId = null; document.getElementById('saveBtn').textContent='Save'; }
+      else { add(rec); }
+      e.target.reset();
+      render();
+    }catch(err){
+      out.textContent = err.message;
+    }
+  });
+
+  document.getElementById('cancelBtn').addEventListener('click', ()=>{
+    editId = null; document.getElementById('saveBtn').textContent='Save'; document.getElementById('formErrors').textContent='';
+  });
+
+  document.querySelectorAll('th button').forEach(btn=>btn.addEventListener('click', ()=>{
+    const key = btn.dataset.sort;
+    if(sortBy===key){ sortDir = (sortDir==='asc'?'desc':'asc'); }
+    else { sortBy = key; sortDir = 'asc'; }
+    render();
+  }));
+
+  search.addEventListener('input', ()=>{
+    document.getElementById('searchStatus').textContent = search.value ? 'Filtered by search.' : 'Showing all records.';
+    render();
+  });
+  toggleCase.addEventListener('click', ()=>{
+    caseInsensitive = !caseInsensitive;
+    toggleCase.setAttribute('aria-pressed', String(!caseInsensitive));
+    toggleCase.textContent = caseInsensitive ? 'Case-insensitive' : 'Case-sensitive';
+    render();
+  });
+
+  document.getElementById('exportBtn').addEventListener('click', ()=>{
+    const blob = new Blob([exportJSON()], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'finance-export.json'; a.click();
+    document.getElementById('persistStatus').textContent = 'Exported JSON.';
+  });
+  document.getElementById('importFile').addEventListener('change', (e)=>{
+    const file = e.target.files?.[0]; if(!file) return;
+    file.text().then(txt=>{
+      try{ importJSON(txt); document.getElementById('persistStatus').textContent = 'Imported JSON.'; render(); }
+      catch(err){ document.getElementById('persistStatus').textContent = 'Import failed: '+err.message; }
+    });
+  });
+  document.getElementById('clearBtn').addEventListener('click', ()=>{
+    if(confirm('Clear all data?')){ clearAll(); render(); document.getElementById('persistStatus').textContent='Cleared all data.'; }
+  });
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === '/'){ e.preventDefault(); search.focus(); }
+  });
+
+  // THEME: toggle + persistence + optional system sync
+  const THEME_KEY = 'app:theme';
+  function applyTheme(t){
+    if(t) document.documentElement.setAttribute('data-theme', t);
+    else document.documentElement.removeAttribute('data-theme');
+    if(themeToggle) themeToggle.setAttribute('aria-pressed', String(t === 'light'));
+  }
+  function saveTheme(t){ try{ if(t) localStorage.setItem(THEME_KEY, t); else localStorage.removeItem(THEME_KEY); }catch(e){} }
+  function getStoredTheme(){ try{ return localStorage.getItem(THEME_KEY); }catch(e){return null;} }
+
+  // initialize theme state (respect stored value or system preference already applied in head)
+  const stored = getStoredTheme();
+  if(stored) applyTheme(stored);
+
+  if(themeToggle){
+    themeToggle.addEventListener('click', ()=>{
+      const cur = document.documentElement.getAttribute('data-theme');
+      const next = cur === 'light' ? 'dark' : 'light';
+      applyTheme(next);
+      saveTheme(next);
+    });
+  }
+
+  // respond to system changes only when user hasn't manually chosen
+  try{
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    mq.addEventListener && mq.addEventListener('change', (e)=>{
+      if(getStoredTheme()) return; // user preference wins
+      applyTheme(e.matches ? 'light' : null);
+    });
+  }catch(e){/* ignore */}
+
+  // Seed data for demo
+  if(data.length === 0){
+    importJSON(JSON.stringify([
+      {"id":"txn_1","description":"Lunch at cafeteria","amount":12.50,"category":"Food","date":"2025-09-25","createdAt":"","updatedAt":""},
+      {"id":"txn_2","description":"Chemistry textbook","amount":89.99,"category":"Books","date":"2025-09-23","createdAt":"","updatedAt":""},
+      {"id":"txn_3","description":"Bus pass","amount":45.00,"category":"Transport","date":"2025-09-20","createdAt":"","updatedAt":""},
+      {"id":"txn_4","description":"Coffee with friends","amount":8.75,"category":"Entertainment","date":"2025-09-28","createdAt":"","updatedAt":""}
+    ]));
+  }
+  render();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+
+</script>
+</body>
+</html>
